@@ -33,6 +33,14 @@ handle_async_error (App *self)
     self->running = FALSE;
 }
 
+static GError **
+get_async_error (App *self)
+{
+  if (self->async_error)
+    return NULL;
+  return &self->async_error;
+}
+
 static gboolean
 idle_do_inc (gpointer user_data);
 
@@ -42,7 +50,7 @@ on_inc_return (GDBusProxy          *counter,
 	       App                 *self)
 {
   GVariant *resultv =
-    g_dbus_proxy_call_finish (counter, result, &self->async_error);
+    g_dbus_proxy_call_finish (counter, result, get_async_error (self));
 
   if (!resultv)
     goto out;
@@ -60,7 +68,7 @@ on_get_return (GDBusProxy          *counter,
 	       App                 *self)
 {
   GVariant *resultv =
-    g_dbus_proxy_call_finish (counter, result, &self->async_error);
+    g_dbus_proxy_call_finish (counter, result, get_async_error (self));
   guint counterv;
 
   if (!resultv)
@@ -116,7 +124,7 @@ on_initial_get_return (GDBusProxy          *counter,
 		       App                 *self)
 {
   GVariant *resultv =
-    g_dbus_proxy_call_finish (counter, result, &self->async_error);
+    g_dbus_proxy_call_finish (counter, result, get_async_error (self));
 
   if (!resultv)
     goto out;
@@ -160,7 +168,7 @@ on_name_appeared (GDBusConnection *connection,
 					     "/org/verbum/counter", /* object path */
 					     "org.verbum.Counter",
 					     NULL, /* GCancellable */
-					     &self->async_error);
+					     get_async_error (self));
       if (!self->counter)
 	goto out;
 
