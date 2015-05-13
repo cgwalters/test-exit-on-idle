@@ -23,6 +23,15 @@ TODO: Debug why this is
 The systemd event loop has special support for exiting, which
 GMainLoop doesn't.  This demo app uses a tristate.
 
+### Clients should always use the well-known name
+
+One thing that wasn't obvious to me at the start, but due to the way
+DBus policies work, any attempt to send a message to the non-current
+owner of the name will be denied (which happens when the service is
+exiting and has released the name).
+
+Thus, clients should always send messages to the well-known name.
+
 ### Save our state on disk
 
 A stateful service needs to actually save things on disk, this app
