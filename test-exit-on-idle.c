@@ -9,7 +9,8 @@ consume_error (GError *error)
   g_error_free (error);
 }
 
-static int opt_idle_timeout = 10;
+static int opt_idle_timeout = 5;
+static int opt_exit_sleep_ms = 3000;
 static gboolean opt_session = FALSE;
 static gboolean opt_racy_exit = FALSE;
 static int opt_save_timeout = 2;
@@ -60,10 +61,13 @@ bump_idle_timer (App *self)
   if (self->idle_exit_source)
     g_source_destroy (self->idle_exit_source);
 
-  g_printerr ("Reset idle timer (%u seconds)\n", opt_idle_timeout);
-  self->idle_exit_source = g_timeout_source_new_seconds (opt_idle_timeout);
-  g_source_set_callback (self->idle_exit_source, (GSourceFunc)idle_flush_and_exit, self, NULL);
-  g_source_attach (self->idle_exit_source, self->mainctx);
+  if (self->state == STATE_RUNNING)
+    {
+      g_printerr ("Reset idle timer (%u seconds)\n", opt_idle_timeout);
+      self->idle_exit_source = g_timeout_source_new_seconds (opt_idle_timeout);
+      g_source_set_callback (self->idle_exit_source, (GSourceFunc)idle_flush_and_exit, self, NULL);
+      g_source_attach (self->idle_exit_source, self->mainctx);
+    }
 }
 
 static gboolean
@@ -111,6 +115,7 @@ handle_method_call (GDBusConnection       *connection,
   else if (g_strcmp0 (method_name, "Inc") == 0)
     {
       self->counter++;
+      g_printerr ("counter=%u\n", self->counter);
       if (self->idle_save_source == NULL)
 	{
 	  self->idle_save_source = g_timeout_source_new_seconds (opt_save_timeout);
@@ -168,6 +173,16 @@ on_bus_name_released (GDBusConnection     *connection,
   g_assert_cmpint (self->state, ==, STATE_FLUSHING);
   self->state = STATE_EXITING;
   g_main_context_wakeup (self->mainctx);
+}
+
+static gboolean
+on_sigterm (gpointer user_data)
+{
+  App *self = user_data;
+  g_printerr ("(SIGTERM)\n");
+  if (self->state == STATE_RUNNING)
+    self->state = STATE_FLUSHING;
+  return FALSE;
 }
 
 int
@@ -240,8 +255,17 @@ main (int argc, char **argv)
   self->state = STATE_RUNNING;
   bump_idle_timer (self);
 
+  g_unix_signal_add (SIGTERM, on_sigterm, self);
+
+  g_printerr ("=> STATE_RUNNING\n");
+
   while (self->state == STATE_RUNNING)
     g_main_context_iteration (self->mainctx, TRUE);
+
+  g_printerr ("=> STATE_FLUSHING\n");
+
+  /* Widen the race condition */
+  g_usleep (opt_exit_sleep_ms * 1000);
 
   /* Taken from systemd/src/libsystemd/sd-bus/bus-util.c */
   /* Inform the service manager that we are going down, so that it
@@ -268,7 +292,11 @@ main (int argc, char **argv)
   while (self->state == STATE_FLUSHING)
     g_main_context_iteration (self->mainctx, TRUE);
 
+  g_printerr ("=> STATE_EXITING\n");
   g_assert_cmpint (self->state, ==, STATE_EXITING);
+
+  /* Widen the race condition */
+  g_usleep (opt_exit_sleep_ms * 1000);
 
   if (self->idle_save_source)
     (void) idle_save (self);
@@ -279,5 +307,6 @@ main (int argc, char **argv)
       consume_error (local_error);
       return 1;
     }
+  g_printerr ("exit(0)\n");
   return 0;
 }
