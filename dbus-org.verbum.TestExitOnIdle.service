@@ -1,0 +1,10 @@
+[Unit]
+Description=verbum.org TestExitOnIdle
+After=syslog.target
+
+[Service]
+BusName=org.verbum.TestExitOnIdle
+ExecStart=/usr/lib/org.verbum.TestExitOnIdle
+
+[Install]
+WantedBy=multi-user.target

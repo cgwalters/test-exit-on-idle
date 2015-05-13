@@ -1,0 +1,5 @@
+[D-BUS Service]
+Name=org.verbum.TestExitOnIdle
+Exec=/bin/false
+User=root
+SystemdService=dbus-org.verbum.TestExitOnIdle.service
