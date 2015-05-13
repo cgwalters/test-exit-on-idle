@@ -9,7 +9,7 @@ consume_error (GError *error)
   g_error_free (error);
 }
 
-static int opt_idle_timeout_ms = 2000;
+static int opt_idle_timeout_ms = 100;
 static int opt_exit_sleep_ms = 3000;
 static gboolean opt_session = FALSE;
 static gboolean opt_racy_exit = FALSE;
