@@ -9,11 +9,11 @@ consume_error (GError *error)
   g_error_free (error);
 }
 
-static int opt_idle_timeout = 5;
+static int opt_idle_timeout_ms = 2000;
 static int opt_exit_sleep_ms = 3000;
 static gboolean opt_session = FALSE;
 static gboolean opt_racy_exit = FALSE;
-static int opt_save_timeout = 2;
+static int opt_save_timeout_ms = 1000;
 
 typedef enum {
   STATE_RUNNING,
@@ -63,8 +63,9 @@ bump_idle_timer (App *self)
 
   if (self->state == STATE_RUNNING)
     {
-      g_printerr ("Reset idle timer (%u seconds)\n", opt_idle_timeout);
-      self->idle_exit_source = g_timeout_source_new_seconds (opt_idle_timeout);
+      guint ms = g_random_int_range (0, opt_idle_timeout_ms);
+      g_printerr ("Reset idle timer (%u ms)\n", ms);
+      self->idle_exit_source = g_timeout_source_new (ms);
       g_source_set_callback (self->idle_exit_source, (GSourceFunc)idle_flush_and_exit, self, NULL);
       g_source_attach (self->idle_exit_source, self->mainctx);
     }
@@ -118,7 +119,8 @@ handle_method_call (GDBusConnection       *connection,
       g_printerr ("counter=%u\n", self->counter);
       if (self->idle_save_source == NULL)
 	{
-	  self->idle_save_source = g_timeout_source_new_seconds (opt_save_timeout);
+	  guint ms = g_random_int_range (0, opt_save_timeout_ms);
+	  self->idle_save_source = g_timeout_source_new (ms);
 	  g_source_set_callback (self->idle_save_source, (GSourceFunc)idle_save, self, NULL);
 	  g_source_attach (self->idle_save_source, self->mainctx);
 	}
@@ -197,8 +199,8 @@ main (int argc, char **argv)
   static const char busname[] = "org.verbum.TestExitOnIdle";
   GOptionEntry option_entries[] =
     {
-      { "idle-timeout", 'i', 0, G_OPTION_ARG_INT, &opt_idle_timeout, "Idle timeout in seconds", "SECONDS" },
-      { "save-timeout", 's', 0, G_OPTION_ARG_INT, &opt_save_timeout, "Save timeout in seconds", "SECONDS" },
+      { "idle-timeout", 'i', 0, G_OPTION_ARG_INT, &opt_idle_timeout_ms, "Idle timeout in milliseconds", "MSEC" },
+      { "save-timeout", 's', 0, G_OPTION_ARG_INT, &opt_save_timeout_ms, "Save timeout in milliseconds", "MSEC" },
       { "session", 'y', 0, G_OPTION_ARG_NONE, &opt_session, "Use the session bus, not system", NULL },
       { "racy-exit", 0, 0, G_OPTION_ARG_NONE, &opt_racy_exit, "Avoid using sd_notify when stopping", NULL },
       { NULL}
@@ -265,7 +267,7 @@ main (int argc, char **argv)
   g_printerr ("=> STATE_FLUSHING\n");
 
   /* Widen the race condition */
-  g_usleep (opt_exit_sleep_ms * 1000);
+  g_usleep (g_random_int_range (0, opt_exit_sleep_ms) * 1000);
 
   /* Taken from systemd/src/libsystemd/sd-bus/bus-util.c */
   /* Inform the service manager that we are going down, so that it
@@ -296,7 +298,7 @@ main (int argc, char **argv)
   g_assert_cmpint (self->state, ==, STATE_EXITING);
 
   /* Widen the race condition */
-  g_usleep (opt_exit_sleep_ms * 1000);
+  g_usleep (g_random_int_range (0, opt_exit_sleep_ms) * 1000);
 
   if (self->idle_save_source)
     (void) idle_save (self);

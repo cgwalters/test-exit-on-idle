@@ -3,13 +3,17 @@
 #include <systemd/sd-daemon.h>
 
 static gboolean opt_session = FALSE;
-static int opt_inc_timeout_ms = 100;
+static int opt_inc_timeout_min_ms = 100;
+static int opt_inc_timeout_max_ms = 2000;
 
 typedef struct {
   GMainContext *mainctx;
   gboolean running;
 
   guint expected_counter;
+  guint idle_inc_id;
+  guint idle_status_id;
+  guint n_increments;
 
   GDBusProxy *counter;
   GError *async_error;
@@ -25,16 +29,29 @@ consume_error (GError *error)
 static void
 handle_async_error (App *self)
 {
-  if (app->async_error)
-    app.running = FALSE;
+  if (self->async_error)
+    self->running = FALSE;
 }
 
 static gboolean
-idle_do_inc (gpointer user_data)
-{
-  App *self = user_data;
+idle_do_inc (gpointer user_data);
 
-  return TRUE;
+static void
+on_inc_return (GDBusProxy          *counter,
+	       GAsyncResult        *result,
+	       App                 *self)
+{
+  GVariant *resultv =
+    g_dbus_proxy_call_finish (counter, result, &self->async_error);
+
+  if (!resultv)
+    goto out;
+
+  g_assert (g_variant_is_of_type (resultv, G_VARIANT_TYPE ("()")));
+
+ out:
+  g_clear_pointer (&resultv, g_variant_unref);
+  handle_async_error (self);
 }
 
 static void
@@ -43,22 +60,80 @@ on_get_return (GDBusProxy          *counter,
 	       App                 *self)
 {
   GVariant *resultv =
-    g_dbus_proxy_call_finish (counter, result, &self.async_error);
+    g_dbus_proxy_call_finish (counter, result, &self->async_error);
+  guint counterv;
 
   if (!resultv)
     goto out;
 
-  g_assert (g_variant_is_of_type (resultv, "(u)"));
+  g_assert (g_variant_is_of_type (resultv, G_VARIANT_TYPE ("(u)")));
 
-  g_variant_get (resultv, "(u)", &app->expected_counter);
+  g_variant_get (resultv, "(u)", &counterv);
 
-  if (!app->idle_inc_id)
-    {
-      app->idle_inc_id = g_timeout_add (opt_inc_timeout_ms, (GSourceFunc)idle_do_inc, app);
-      (void) idle_do_inc (app);
-    }
+  g_assert_cmpuint (counterv, ==, self->expected_counter);
+
+  {
+    guint msec = g_random_int_range (opt_inc_timeout_min_ms, opt_inc_timeout_max_ms);
+    self->idle_inc_id = g_timeout_add (msec, (GSourceFunc)idle_do_inc, self);
+  }
 
  out:
+  g_clear_pointer (&resultv, g_variant_unref);
+  handle_async_error (self);
+}
+
+static gboolean
+idle_do_inc (gpointer user_data)
+{
+  App *self = user_data;
+  guint msec = g_random_int_range (opt_inc_timeout_min_ms, opt_inc_timeout_max_ms);
+
+  g_dbus_proxy_call (self->counter, "Inc", NULL, 0, -1, NULL,
+		     (GAsyncReadyCallback)on_inc_return, self);
+
+  g_dbus_proxy_call (self->counter, "Get", NULL, 0, -1, NULL,
+		     (GAsyncReadyCallback)on_get_return, self);
+
+  self->expected_counter++;
+  self->n_increments++;
+
+  return FALSE;
+}
+
+static gboolean
+idle_print_status (App *self)
+{
+  g_printerr ("counter: %u; increments: %u\n",
+	      self->expected_counter,
+	      self->n_increments);
+  
+  return TRUE;
+}
+
+static void
+on_initial_get_return (GDBusProxy          *counter,
+		       GAsyncResult        *result,
+		       App                 *self)
+{
+  GVariant *resultv =
+    g_dbus_proxy_call_finish (counter, result, &self->async_error);
+
+  if (!resultv)
+    goto out;
+
+  g_assert (g_variant_is_of_type (resultv, G_VARIANT_TYPE ("(u)")));
+
+  g_variant_get (resultv, "(u)", &self->expected_counter);
+  g_printerr ("Initial counter: %u\n", self->expected_counter);
+
+  if (!self->idle_inc_id)
+    self->idle_inc_id = g_idle_add ((GSourceFunc)idle_do_inc, self);
+
+  if (!self->idle_status_id)
+    self->idle_status_id = g_timeout_add_seconds (3, (GSourceFunc)idle_print_status, self);
+
+ out:
+  g_clear_pointer (&resultv, g_variant_unref);
   handle_async_error (self);
 }
 
@@ -72,20 +147,26 @@ on_name_appeared (GDBusConnection *connection,
 
   g_printerr ("name now owned by: %s\n", name_owner);
 
-  g_clear_object (&app->counter);
-  app->counter = g_dbus_proxy_new_sync (connection,
-					G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
-					NULL,                      /* GDBusInterfaceInfo */
-					name_owner, /* name */
-					"/org/verbum/counter", /* object path */
-					"org.verbum.Counter",
-					NULL, /* GCancellable */
-					&app.async_error);
-  if (!app->counter)
-    goto out;
+  if (!self->counter)
+    {
+      /* NOTE: We always make a proxy for the well-known name, to avoid race conditions
+       * when the service is auto-restarting.
+       */
+      g_printerr ("Creating initial proxy\n");
+      self->counter = g_dbus_proxy_new_sync (connection,
+					     G_DBUS_PROXY_FLAGS_DO_NOT_LOAD_PROPERTIES,
+					     NULL,                      /* GDBusInterfaceInfo */
+					     name,
+					     "/org/verbum/counter", /* object path */
+					     "org.verbum.Counter",
+					     NULL, /* GCancellable */
+					     &self->async_error);
+      if (!self->counter)
+	goto out;
 
-  g_dbus_proxy_call (app->counter, "Get", NULL, 0, -1, NULL,
-		     (GAsyncReadyCallback)on_get_return, app);
+      g_dbus_proxy_call (self->counter, "Get", NULL, 0, -1, NULL,
+			 (GAsyncReadyCallback)on_initial_get_return, self);
+    }
 
  out:
   handle_async_error (self);
@@ -96,12 +177,9 @@ on_name_vanished (GDBusConnection *connection,
                   const gchar     *name,
                   gpointer         user_data)
 {
+  App *self = user_data;
+
   g_printerr ("name now owned by: <none>\n");
-  if (app->idle_inc_id)
-    {
-      g_source_remove (app->idle_inc_id);
-      app->idle_inc_id = 0;
-    }
 }
 
 int
@@ -115,6 +193,8 @@ main (int argc, char **argv)
   GOptionEntry option_entries[] =
     {
       { "session", 'y', 0, G_OPTION_ARG_NONE, &opt_session, "Use the session bus, not system", NULL },
+      { "min-freq", 0, 0, G_OPTION_ARG_INT, &opt_inc_timeout_min_ms, "Minimum timeout", "MSEC" },
+      { "max-freq", 0, 0, G_OPTION_ARG_INT, &opt_inc_timeout_max_ms, "Max timeout", "MSEC" },
       { NULL}
     };
 
@@ -132,7 +212,7 @@ main (int argc, char **argv)
                                  G_BUS_NAME_WATCHER_FLAGS_AUTO_START,
                                  on_name_appeared,
                                  on_name_vanished,
-                                 NULL,
+                                 self,
                                  NULL);
 
   app.running = TRUE;
